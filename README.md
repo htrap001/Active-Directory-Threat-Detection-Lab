@@ -1,86 +1,92 @@
 # Active Directory Threat Detection Lab
 
-A fully functional Home Lab designed to simulate real-world cyberattacks from an adversary machine (Kali Linux), log the malicious activity on a target enterprise network (Windows Server 2022 Active Directory Domain Controller), and ingest, parse, and analyze the resulting telemetry using a Centralized SIEM (**Splunk Enterprise**).[cite: 1]
+A fully functional Home Lab designed to simulate real-world cyberattacks from an adversary machine (Kali Linux), to log the malicious activity on a target enterprise network (Windows Server 2022 Active Directory Domain Controller), and to ingest, parse, and analyze the resulting telemetry using a Centralized SIEM (**Splunk enterprise**).
 
 ---
 
-## 🛠️ Lab Architecture & Components
+##  Lab architecture & components
 
-The environment is distributed across two physical host machines to accurately simulate a network boundary, utilizing a **Splunk Universal Forwarder (UF)** to securely ship event logs.[cite: 1]
-
+The environment is distributed across two physical host machines to accurately simulate a network boundary, utilizing a **Splunk universal forwarder** to securely ship event logs.
+  **Virtualization:** Oracle virtualbox.
 
 
 
 ```
-   [ Kali Linux VM ] (Attacker)
+   [ Kali linux VM ] (Attacker)
            │
-           ▼ (SMB / RPC Brute Force Attacks)
+           ▼ (SMB brute force attacks)
 ```
 ```
 
-[ Windows Server 2022 DC ] (Target Core)
+[ Windows server 2022 DC ] (Target core)
 │
-▼ (Splunk Universal Forwarder)
-[ Splunk Enterprise ] (SIEM Engine)
+▼ (Splunk universal forwarder)
+[ Splunk enterprise ] (SIEM engine)
 
 ```
 
-*   **SIEM Node (Host 1 - Intel i5 Laptop):** 
-    *   **OS:** Windows 11 Local Host[cite: 1]
-    *   **Deployment:** Splunk Enterprise Server (Indexer & Search Head)[cite: 1]
-*   **Target & Attack Environment (Host 2 - Intel i7 Laptop):**
-    *   **Domain Controller:** Windows Server 2022 Evaluation Copy (Active Directory Services, DNS).[cite: 1]
-    *   **Endpoint Telemetry Agent:** Splunk Universal Forwarder + Microsoft Sysmon.[cite: 1]
-    *   **Attacker Platform:** Kali Linux fully loaded with network exploitation toolsets (`CrackMapExec` / `NetExec`).[cite: 1]
+*   **SIEM node (Host 1 -i5 Laptop):** 
+    *   **OS:** Windows 11 home Local Host
+    *   **Deployment:** Splunk enterprise server (Indexer & search head)
+*   **Target & attack environment (Host 2 -i7 Laptop):**
+    *   **Domain controller:** Windows Server 2022 Evaluation Copy (Active Directory Services, DNS).
+    *   **Endpoint telemetry agent:** Splunk Universal Forwarder + Microsoft Sysmon.
+    *   **Attacker platform:** Kali Linux VM fully loaded with network exploitation toolsets.
 
 ---
 
-## 🚀 Attack Simulation Scenario
+##  Attack simulation scenario
 
-### Phase 1: High-Frequency Authentication Abuse (Standard Brute Force)
-*   **Objective:** Gain unauthorized access to Active Directory domain accounts by systematically testing a massive list of potential password strings against targeted usernames.
-*   **Execution (Kali Linux):** Targeted the Active Directory SMB service using a pre-compiled password dictionary list against domain users.[cite: 1]
+### Phase 1: High-frequency authentication abuse (standard brute force)
+*   **Objective:** To gain unauthorized access to Active Directory domain accounts by systematically testing a massive list of potential password strings against targeted usernames.
+*   **Execution (in kali linux):** Targeted the Active Directory SMB service using a pre-compiled password dictionary list against domain users.
     ```bash
-    crackmapexec smb 192.168.1.50 -u /usr/share/wordlists/metasploit/namelist.txt -p 'Password123!'
+    crackmapexec smb 192.168.0.109 -u /usr/share/wordlists/metasploit/namelist.txt -p 'Password123!'
     ```
-*   **Mechanism:** This generates an immediate, high-density spike of authentication failures as the attack platform rapidly cycles through potential credential combinations against the Domain Controller.[cite: 1]
+*   **Mechanism:** This generates an immediate, high-density spike of authentication failures as the attack platform rapidly cycles through potential credential combinations against the Domain Controller.
+  <img width="1917" height="1078" alt="Screenshot 2026-07-13 170658" src="https://github.com/user-attachments/assets/7b155f6f-0072-439a-9858-d9495fc0b1c3" />
+
 
 ---
 
-## 🔍 SIEM Engineering & Telemetry Analysis
+##  SIEM engineering & telemetry analysis
 
 ### Detecting Brute Force Tactics
-Standard Windows Event logging maps these malicious access anomalies to **Windows Event ID 4625** (An account failed to log on).[cite: 1]
+Standard Windows Event logging maps these malicious access anomalies to **Windows Event ID 4625** (An account failed to log on).
 
-Because different ingestion pipelines map Windows variables uniquely based on the log format (raw text vs. structured XML), a resilient **coalesce-driven** search query was engineered in Splunk to uniformly normalize disparate schema outputs (`IpAddress`, `Source_Network_Address`, `src_ip`) into clean analytical views.[cite: 1]
+At the time of SMB attack, i had already opened up splunk enterprise on different laptop i.e the one with i5. Search query:
+```
+index=wineventlog
+```
+and i selected Real time. So alerts with event code 4625 (failed logon attempt) started to flood in.
+<img width="1920" height="1080" alt="Realtime" src="https://github.com/user-attachments/assets/7d3af774-9927-418f-879c-2a54e00618a0" />
+<img width="1920" height="1080" alt="event flood" src="https://github.com/user-attachments/assets/695ab2bc-6766-4119-ab31-97ac6153382f" />
 
-#### Production Splunk SPL Query:
+Because different ingestion pipelines map Windows variables uniquely based on the log format (raw text vs. structured XML), then with help of Splunk documentation and some google searches, i wrote a search query to uniformly normalize disparate schema outputs (`IpAddress`, `Source_Network_Address`, `src_ip`) into clean analytical view.
+
+#### Splunk SPL query:
 ```splunk
-index=* EventCode=4625
+index=wineventlog EventCode=4625
 | eval Attacker_IP = coalesce(IpAddress, Source_Network_Address, src_ip)
 | eval Targeted_User = coalesce(TargetUserName, Account_Name, user)
 | stats count min(_time) as first_seen max(_time) as last_seen by Attacker_IP, Targeted_User
 | eval first_seen=strftime(first_seen, "%Y-%m-%d %H:%M:%S"), last_seen=strftime(last_seen, "%Y-%m-%d %H:%M:%S")
 | sort - count
-```[cite: 1]
-
-#### Captured Telemetry Output:
-When the brute force attack was deployed, the Splunk engineering pipeline successfully aggregated, isolated, and highlighted the exact signature of the threat actor:[cite: 1]
-
-| Attacker_IP | Targeted_User | count | first_seen | last_seen |
-| :--- | :--- | :--- | :--- | :--- |
-| `192.168.1.12` | `Administrator` | `45` | 2026-07-13 14:15:22 | 2026-07-13 14:16:10 |
-| `192.168.1.21` | `parth` | `1909` | 2026-07-13 14:15:23 | 2026-07-13 14:16:12 |
-| `192.168.1.21` | `guest` | `12` | 2026-07-13 14:15:24 | 2026-07-13 14:15:55 |
-
----
-
-## 📈 Lab Optimization & Hardening Steps
-1.  **Sysmon Integration:** Deployed Microsoft System Monitor utilizing custom rulesets to bridge visibility gaps surrounding process spawning hierarchies and network hooks initiated during authentication floods.[cite: 1]
-2.  **Field Extraction Tuning:** Implemented structured field alias rules within Splunk's configuration parsing layer (`props.conf`) to automate data normalization without relying on manual run-time evaluations.[cite: 1]
-3.  **Threshold Ingestion Rules:** Configured alert rules to flag whenever a unique internal asset generates more than twenty login disruptions within a sixty-second window.[cite: 1]
-
----
-*Developed as an engineering capstone to demonstrate proficiency in Security Operations, SIEM engineering, log normalization, and Active Directory threat vectors.*[cite: 1]
-
 ```
+
+#### Captured telemetry output after above search query:
+When the brute force attack was deployed, the Splunk engineering pipeline successfully aggregated, isolated, and highlighted the exact signature of the threat actor:
+<img width="1920" height="1080" alt="Search query" src="https://github.com/user-attachments/assets/f9dc9952-82d6-4820-882e-3e4929013a65" />
+
+
+---
+
+##  Lab optimization & hardening steps
+1.  **Sysmon integration:** Deployed Microsoft System Monitor utilizing custom rulesets to bridge visibility gaps surrounding process spawning hierarchies and network hooks initiated during authentication floods.[cite: 1]
+2.  **Field extraction tuning:** Implemented structured field alias rules within Splunk's configuration parsing layer (`props.conf`) to automate data normalization without relying on manual run-time evaluations.[cite: 1]
+3.  **Threshold ingestion rules:** Configured alert rules to flag whenever a unique internal asset generates more than twenty login disruptions within a sixty-second window.[cite: 1]
+
+## Converted it itno a splunk dashboard
+<img width="1920" height="1080" alt="Dashboard" src="https://github.com/user-attachments/assets/64b7cf10-ed02-42d8-8b29-56e0305498f2" />
+
+*Developed as an capstone to demonstrate proficiency in Security operations, SIEM engineering, log normalization, and Active directory threat vectors.*
