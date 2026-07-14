@@ -1,0 +1,4 @@
+index=* EventCode=5156
+| bucket _time span=1m
+| stats count as Packets_Per_Minute by SourceAddress, DestPort
+| where Packets_Per_Minute > 500
